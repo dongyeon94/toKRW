@@ -239,9 +239,19 @@ const STORE_KEY = "tokrw.snapshot";
 const CURRENCY_KEY = "tokrw.currency";
 const FAVORITES_KEY = "tokrw.favorites";
 const HIDDEN_KEY = "tokrw.hidden";
+const PRESET_KEY = "tokrw.preset";
 
-// 처음 켰을 때 비어 있으면 허전하니 흔히 쓰는 여섯을 미리 올려 둔다.
-const DEFAULT_FAVORITES = ["USD", "JPY", "EUR", "CNY", "VND", "IDR"];
+// 기본으로 목록에 보여 줄 통화. 나머지는 빼 둔다. 검색하면 그대로 나온다.
+// 괌은 미국 달러를 쓰므로 USD 하나로 덮인다.
+const DEFAULT_VISIBLE =
+  ["USD", "JPY", "CNY", "TWD", "HKD", "SGD", "THB", "VND", "PHP", "IDR", "MYR"];
+
+// 그중에서도 맨 위에 올려 둘 통화.
+const DEFAULT_FAVORITES = ["USD", "JPY", "CNY", "VND", "IDR"];
+
+// 위 두 목록을 바꿀 때 이 값도 같이 바꾼다.
+// 기기에 저장된 값이 옛 프리셋이면 한 번만 새 프리셋으로 덮어쓴다.
+const PRESET_VERSION = "2026-09-12-asia";
 const MAX_DIGITS = 12;
 const MAX_DECIMALS = 2;
 
@@ -271,13 +281,28 @@ function loadCodes(key, fallback) {
   return new Set(fallback);
 }
 
-const favorites = loadCodes(FAVORITES_KEY, DEFAULT_FAVORITES);
-const hidden = loadCodes(HIDDEN_KEY, []);
-let editing = false;
-
 function saveCodes(key, set) {
   save(key, JSON.stringify([...set]));
 }
+
+const defaultHidden = CURRENCIES
+  .map(c => c.code)
+  .filter(code => !DEFAULT_VISIBLE.includes(code));
+
+const freshPreset = load(PRESET_KEY) !== PRESET_VERSION;
+const favorites = freshPreset ? new Set(DEFAULT_FAVORITES) : loadCodes(FAVORITES_KEY, DEFAULT_FAVORITES);
+const hidden = freshPreset ? new Set(defaultHidden) : loadCodes(HIDDEN_KEY, defaultHidden);
+
+// 즐겨찾기와 숨김이 겹치면 즐겨찾기를 살린다. 손으로 고친 값이 섞여 들어올 수 있다.
+for (const code of favorites) hidden.delete(code);
+
+if (freshPreset) {
+  save(PRESET_KEY, PRESET_VERSION);
+  saveCodes(FAVORITES_KEY, favorites);
+  saveCodes(HIDDEN_KEY, hidden);
+}
+
+let editing = false;
 
 /** 즐겨찾기와 숨김은 동시에 켜질 수 없다. 한쪽을 켜면 반대쪽을 끈다. */
 function toggleFavorite(code) {
@@ -591,7 +616,8 @@ function renderList() {
     put(CURRENCIES.filter(matches));
   } else {
     const starred = CURRENCIES.filter(c => favorites.has(c.code));
-    const rest = CURRENCIES.filter(c => !favorites.has(c.code) && !hidden.has(c.code));
+    const rest = CURRENCIES.filter(c => !favorites.has(c.code) &&
+      (!hidden.has(c.code) || c.code === state.currency.code));
     if (starred.length) { addSection("자주 쓰는 통화"); put(starred); addSection("전체"); }
     put(rest);
   }
