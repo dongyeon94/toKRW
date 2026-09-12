@@ -84,6 +84,7 @@
   }
   #keypad button:active { background: var(--surface-press); }
   #keypad .fn { color: var(--accent); font-size: 20px; }
+  #keypad .wide { font-size: 19px; letter-spacing: -.02em; }
   #keypad .op { color: var(--accent); font-size: 26px; font-weight: 600; }
   #keypad .op.armed { background: var(--accent); color: #08101f; }
   #keypad .eq { background: var(--accent); color: #08101f; font-size: 26px; font-weight: 700; }
@@ -616,7 +617,7 @@ const KEYS = [
   { key: "4" }, { key: "5" }, { key: "6" }, { key: "−", kind: "op" },
   { key: "1" }, { key: "2" }, { key: "3" }, { key: "+", kind: "op" },
   { key: "0" },
-  { key: "00", run: () => { tapDigit("0"); tapDigit("0"); }, label: "0 두 개" },
+  { key: "000", kind: "wide", run: () => { tapDigit("0"); tapDigit("0"); tapDigit("0"); }, label: "0 세 개" },
   { key: "." , run: tapDot },
   { key: "=", kind: "eq", run: tapEquals, label: "계산" },
 ];
