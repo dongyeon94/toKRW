@@ -92,26 +92,44 @@
   }
   dialog#picker::backdrop { background: rgba(0,0,0,.55); }
   .grabber { width: 40px; height: 4px; border-radius: 2px; background: #4a5578; margin: 10px auto 6px; }
+  .pickhead { display: flex; align-items: center; gap: 10px; margin: 8px 20px 10px; }
   #search {
-    margin: 8px 20px 10px; padding: 12px 14px;
+    flex: 1; min-width: 0; padding: 12px 14px;
     background: var(--bg); color: var(--fg);
     border: 1px solid #2a3352; border-radius: 12px;
     font: inherit; font-size: 16px;
     -webkit-user-select: text; user-select: text;
   }
-  #list { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
-  #list button {
-    display: flex; align-items: center; gap: 14px; width: 100%;
-    background: none; border: 0; color: var(--fg);
-    padding: 14px 20px; font: inherit; text-align: left; cursor: pointer;
+  #edit {
+    flex: none; background: none; border: 0; color: var(--accent);
+    font: inherit; font-size: 16px; font-weight: 600; padding: 8px 2px; cursor: pointer;
   }
-  #list button:active { background: var(--surface-press); }
+  #hint { padding: 0 20px 10px; font-size: 13px; opacity: .5; }
+
+  #list { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: 20px; }
+  #list .section {
+    padding: 14px 20px 6px; font-size: 12px; font-weight: 700;
+    letter-spacing: .04em; opacity: .45;
+  }
+  #list .row { display: flex; align-items: center; }
+  #list .main {
+    display: flex; align-items: center; gap: 14px; flex: 1; min-width: 0;
+    background: none; border: 0; color: var(--fg);
+    padding: 14px 4px 14px 20px; font: inherit; text-align: left; cursor: pointer;
+  }
+  #list .main:active { background: var(--surface-press); }
   #list .flag { font-size: 24px; }
   #list .names { flex: 1; min-width: 0; }
   #list .code { font-size: 16px; font-weight: 600; }
   #list .name { font-size: 13px; opacity: .55; }
   #list .val { font-size: 14px; opacity: .7; }
-  #list .tick { color: var(--accent); font-weight: 700; }
+  #list .tick { color: var(--accent); font-weight: 700; width: 16px; text-align: center; }
+  #list .mark {
+    flex: none; background: none; border: 0; color: var(--fg);
+    padding: 14px 20px 14px 8px; font: inherit; font-size: 19px; cursor: pointer;
+  }
+  #list .mark.on { color: var(--accent); }
+  #list .mark.off { opacity: .3; }
   #empty { padding: 30px 20px; text-align: center; opacity: .5; font-size: 15px; }
 </style>
 </head>
@@ -137,7 +155,11 @@
 
 <dialog id="picker">
   <div class="grabber"></div>
-  <input id="search" type="search" placeholder="통화 이름이나 코드로 검색" autocomplete="off">
+  <div class="pickhead">
+    <input id="search" type="search" placeholder="통화 이름이나 코드로 검색" autocomplete="off">
+    <button id="edit" type="button">편집</button>
+  </div>
+  <div id="hint" hidden></div>
   <div id="list"></div>
   <div id="empty" hidden>찾는 통화가 없습니다</div>
 </dialog>
@@ -215,6 +237,11 @@ const PROVIDERS = [
 const AUTO_REFRESH_MS = 24 * 60 * 60 * 1000;
 const STORE_KEY = "tokrw.snapshot";
 const CURRENCY_KEY = "tokrw.currency";
+const FAVORITES_KEY = "tokrw.favorites";
+const HIDDEN_KEY = "tokrw.hidden";
+
+// 처음 켰을 때 비어 있으면 허전하니 흔히 쓰는 넷을 미리 올려 둔다.
+const DEFAULT_FAVORITES = ["USD", "JPY", "EUR", "CNY"];
 const MAX_DIGITS = 12;
 const MAX_DECIMALS = 2;
 
@@ -231,6 +258,38 @@ function load(key) {
 }
 function save(key, value) {
   try { localStorage.setItem(key, value); } catch { /* 사파리 비공개 모드 등 */ }
+}
+
+/** 저장된 통화 코드 목록을 Set 으로. 값이 없으면 fallback 을 쓴다. */
+function loadCodes(key, fallback) {
+  const raw = load(key);
+  if (raw === null) return new Set(fallback);
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return new Set(parsed.filter(c => BY_CODE[c]));
+  } catch { /* 깨진 값은 무시 */ }
+  return new Set(fallback);
+}
+
+const favorites = loadCodes(FAVORITES_KEY, DEFAULT_FAVORITES);
+const hidden = loadCodes(HIDDEN_KEY, []);
+let editing = false;
+
+function saveCodes(key, set) {
+  save(key, JSON.stringify([...set]));
+}
+
+/** 즐겨찾기와 숨김은 동시에 켜질 수 없다. 한쪽을 켜면 반대쪽을 끈다. */
+function toggleFavorite(code) {
+  if (favorites.has(code)) favorites.delete(code);
+  else { favorites.add(code); hidden.delete(code); saveCodes(HIDDEN_KEY, hidden); }
+  saveCodes(FAVORITES_KEY, favorites);
+}
+
+function toggleHidden(code) {
+  if (hidden.has(code)) hidden.delete(code);
+  else { hidden.add(code); favorites.delete(code); saveCodes(FAVORITES_KEY, favorites); }
+  saveCodes(HIDDEN_KEY, hidden);
 }
 
 // ---- 환율 ----
@@ -442,42 +501,113 @@ const picker = el("picker");
 const list = el("list");
 const search = el("search");
 
-function renderList() {
-  const query = search.value.trim().toLowerCase();
-  const rows = CURRENCIES.filter(c =>
-    !query || c.code.toLowerCase().includes(query) || c.name.toLowerCase().includes(query));
+function makeRow(currency) {
+  const per = krwPerUnit(state.snapshot, currency.code);
+  const isFavorite = favorites.has(currency.code);
+  const isHidden = hidden.has(currency.code);
 
-  list.replaceChildren();
-  el("empty").hidden = rows.length > 0;
+  const row = document.createElement("div");
+  row.className = "row";
 
-  for (const currency of rows) {
-    const per = krwPerUnit(state.snapshot, currency.code);
-    const button = document.createElement("button");
-    button.type = "button";
-    button.innerHTML =
-      '<span class="flag"></span>' +
-      '<span class="names"><span class="code"></span><br><span class="name"></span></span>' +
-      '<span class="val"></span><span class="tick"></span>';
-    button.querySelector(".flag").textContent = currency.flag;
-    button.querySelector(".code").textContent = currency.code;
-    button.querySelector(".name").textContent = currency.name;
-    button.querySelector(".val").textContent =
-      per === null ? "" : formatRate(per * (currency.unit || 1));
-    button.querySelector(".tick").textContent =
-      currency.code === state.currency.code ? "✓" : "";
+  const main = document.createElement("button");
+  main.type = "button";
+  main.className = "main";
+  main.innerHTML =
+    '<span class="flag"></span>' +
+    '<span class="names"><span class="code"></span><br><span class="name"></span></span>' +
+    '<span class="val"></span><span class="tick"></span>';
+  main.querySelector(".flag").textContent = currency.flag;
+  main.querySelector(".code").textContent = currency.code;
+  main.querySelector(".name").textContent = currency.name;
+  main.querySelector(".val").textContent =
+    per === null ? "" : formatRate(per * (currency.unit || 1));
+  main.querySelector(".tick").textContent =
+    !editing && currency.code === state.currency.code ? "✓" : "";
 
-    button.addEventListener("click", () => {
+  const mark = document.createElement("button");
+  mark.type = "button";
+
+  if (editing) {
+    // 편집 중에는 목록에 보일지 말지를 고른다. 통화 선택은 하지 않는다.
+    mark.className = "mark " + (isHidden ? "off" : "on");
+    mark.textContent = isHidden ? "☐" : "☑";
+    mark.setAttribute("aria-label", currency.code + (isHidden ? " 보이기" : " 숨기기"));
+    const flip = () => { toggleHidden(currency.code); renderList(); };
+    main.addEventListener("click", flip);
+    mark.addEventListener("click", flip);
+  } else {
+    mark.className = "mark " + (isFavorite ? "on" : "off");
+    mark.textContent = isFavorite ? "★" : "☆";
+    mark.setAttribute("aria-label",
+      currency.code + (isFavorite ? " 즐겨찾기 해제" : " 즐겨찾기"));
+    mark.addEventListener("click", () => { toggleFavorite(currency.code); renderList(); });
+    main.addEventListener("click", () => {
       state.currency = currency;
       save(CURRENCY_KEY, currency.code);
       picker.close();
       render();
     });
-    list.appendChild(button);
   }
+
+  row.appendChild(main);
+  row.appendChild(mark);
+  return row;
 }
+
+function addSection(title) {
+  const heading = document.createElement("div");
+  heading.className = "section";
+  heading.textContent = title;
+  list.appendChild(heading);
+}
+
+function renderList() {
+  const query = search.value.trim().toLowerCase();
+  const matches = c =>
+    !query || c.code.toLowerCase().includes(query) || c.name.toLowerCase().includes(query);
+
+  list.replaceChildren();
+  el("edit").textContent = editing ? "완료" : "편집";
+
+  const hint = el("hint");
+  if (editing) {
+    const shown = CURRENCIES.length - hidden.size;
+    hint.textContent = `${shown}개 보임 · 눌러서 목록에서 빼거나 되돌립니다`;
+    hint.hidden = false;
+  } else if (hidden.size > 0) {
+    hint.textContent = `${hidden.size}개를 목록에서 뺐습니다 · 검색하면 그대로 나옵니다`;
+    hint.hidden = false;
+  } else {
+    hint.hidden = true;
+  }
+
+  let count = 0;
+  const put = currencies => {
+    for (const currency of currencies) { list.appendChild(makeRow(currency)); count++; }
+  };
+
+  if (editing || query) {
+    // 편집할 때와 검색할 때는 뺀 통화도 전부 보여 준다. 그래야 되돌릴 수 있다.
+    put(CURRENCIES.filter(matches));
+  } else {
+    const starred = CURRENCIES.filter(c => favorites.has(c.code));
+    const rest = CURRENCIES.filter(c => !favorites.has(c.code) && !hidden.has(c.code));
+    if (starred.length) { addSection("자주 쓰는 통화"); put(starred); addSection("전체"); }
+    put(rest);
+  }
+
+  el("empty").hidden = count > 0;
+}
+
+el("edit").addEventListener("click", () => {
+  editing = !editing;
+  renderList();
+  list.scrollTop = 0;
+});
 
 el("pick").addEventListener("click", () => {
   search.value = "";
+  editing = false;
   renderList();
   picker.showModal();
   list.scrollTop = 0;
