@@ -59,9 +59,10 @@
 
   #figures {
     flex: 1; display: flex; flex-direction: column;
-    justify-content: center; align-items: flex-end; gap: 14px;
+    justify-content: center; align-items: flex-end; gap: 10px;
     min-height: 0;
   }
+  #expr { font-size: 17px; opacity: .4; white-space: nowrap; min-height: 21px; }
   #amount { font-size: 34px; font-weight: 500; opacity: .55; white-space: nowrap; }
   #result { font-size: 56px; font-weight: 700; white-space: nowrap; letter-spacing: -.01em; }
   #result.long { font-size: 44px; }
@@ -71,17 +72,22 @@
   #meta { text-align: right; font-size: 12px; opacity: .45; margin-top: 3px; }
 
   #keypad {
-    display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
-    margin-top: 12px;
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+    margin-top: 10px;
   }
   #keypad button {
-    aspect-ratio: 1.6;
+    aspect-ratio: 1.45;
     background: var(--surface); color: var(--fg);
-    border: 0; border-radius: 20px;
-    font: inherit; font-size: 26px; font-weight: 500;
+    border: 0; border-radius: 18px;
+    font: inherit; font-size: 23px; font-weight: 500;
     cursor: pointer; transition: background .08s;
   }
   #keypad button:active { background: var(--surface-press); }
+  #keypad .fn { color: var(--accent); font-size: 20px; }
+  #keypad .op { color: var(--accent); font-size: 26px; font-weight: 600; }
+  #keypad .op.armed { background: var(--accent); color: #08101f; }
+  #keypad .eq { background: var(--accent); color: #08101f; font-size: 26px; font-weight: 700; }
+  #keypad .eq:active { background: #6cb0ff; }
 
   dialog#picker {
     width: 100%; max-width: 560px; height: 88svh;
@@ -143,6 +149,7 @@
   </header>
 
   <div id="figures">
+    <div id="expr"></div>
     <div id="amount">0 USD</div>
     <div id="result">—</div>
   </div>
@@ -257,7 +264,11 @@ const MAX_DECIMALS = 2;
 
 const state = {
   currency: BY_CODE[load(CURRENCY_KEY)] || BY_CODE.USD,
-  input: "0",
+  input: "0",     // 지금 화면에 뜬 값
+  typed: true,    // 사용자가 찍는 중인지, 계산으로 나온 값인지
+  acc: null,      // 왼쪽 피연산자
+  op: null,       // 대기 중인 연산자
+  calcError: null,
   snapshot: null,
   loading: false,
   error: null,
@@ -388,6 +399,11 @@ function formatInput(input) {
   return grouped;
 }
 
+/** 계산으로 나온 값. 소수는 필요한 만큼만 남기고 뒤의 0 은 버린다. */
+function formatValue(value) {
+  return value.toLocaleString("ko-KR", { maximumFractionDigits: 6 });
+}
+
 /** 원화는 소수점을 버리고 천 단위로 끊어 보여 준다. */
 function formatKrw(value) {
   return groupFmt.format(Math.round(value));
@@ -409,9 +425,41 @@ function formatUpdatedAt(millis) {
   return Math.floor(minutes / 1440) + "일 전 기준";
 }
 
-// ---- 입력 ----
+// ---- 계산 ----
+
+/** 부동소수 오차를 다듬는다. 0.1 + 0.2 가 0.30000000000000004 로 남지 않게. */
+function tidy(value) {
+  const rounded = Number(value.toPrecision(12));
+  return Object.is(rounded, -0) ? 0 : rounded;
+}
+
+const current = () => Number(state.input) || 0;
+
+function apply(a, op, b) {
+  switch (op) {
+    case "+": return a + b;
+    case "−": return a - b;
+    case "×": return a * b;
+    case "÷": return b === 0 ? NaN : a / b;
+    default: return b;
+  }
+}
+
+/** 계산 결과를 화면에 올린다. 나눗셈이 깨지면 오류 상태로 둔다. */
+function settle(value) {
+  if (!isFinite(value)) {
+    state.calcError = "0 으로 나눌 수 없습니다";
+    state.input = "0";
+  } else {
+    state.input = String(tidy(value));
+  }
+  state.typed = false;
+}
 
 function tapDigit(digit) {
+  if (state.calcError) clearAll();
+  if (!state.typed) { state.input = "0"; state.typed = true; }
+
   if (state.input === "0") { state.input = digit; return render(); }
   const decimals = state.input.split(".")[1];
   if (decimals !== undefined && decimals.length >= MAX_DECIMALS) return;
@@ -421,18 +469,68 @@ function tapDigit(digit) {
 }
 
 function tapDot() {
+  if (state.calcError) clearAll();
+  if (!state.typed) { state.input = "0"; state.typed = true; }
   if (state.input.includes(".")) return;
   state.input += ".";
   render();
 }
 
 function tapBackspace() {
+  if (state.calcError) return clearAll();
+  // 계산으로 나온 값은 부분 삭제가 뜻이 없으니 통째로 지운다.
+  if (!state.typed) { state.input = "0"; state.typed = true; return render(); }
   state.input = state.input.slice(0, -1) || "0";
   render();
 }
 
-function clearInput() {
+/** C. 식과 값을 전부 되돌린다. */
+function clearAll() {
   state.input = "0";
+  state.typed = true;
+  state.acc = null;
+  state.op = null;
+  state.calcError = null;
+  render();
+}
+
+function tapOperator(op) {
+  if (state.calcError) return;
+
+  if (state.op !== null && state.typed) {
+    // 왼쪽 값이 이미 있고 오른쪽 값을 찍었으면 먼저 계산한다.
+    const result = apply(state.acc, state.op, current());
+    settle(result);
+    state.acc = state.calcError ? null : current();
+  } else {
+    state.acc = current();
+    state.typed = false;
+  }
+
+  if (state.calcError) { state.op = null; return render(); }
+  state.op = op;
+  render();
+}
+
+function tapEquals() {
+  if (state.calcError || state.op === null) return;
+  settle(apply(state.acc, state.op, current()));
+  state.acc = null;
+  state.op = null;
+  render();
+}
+
+/**
+ * 퍼센트. 앞에 더하기나 빼기가 걸려 있으면 왼쪽 값의 몇 퍼센트로 읽는다.
+ * 100 + 15% 는 115 가 되고, 200 × 10% 는 20 이 된다. 혼자 쓰면 그냥 100 으로 나눈다.
+ */
+function tapPercent() {
+  if (state.calcError) return;
+  const value = current();
+  const portion = (state.op === "+" || state.op === "−")
+    ? state.acc * value / 100
+    : value / 100;
+  settle(portion);
   render();
 }
 
@@ -445,7 +543,16 @@ function render() {
   el("pick").querySelector(".code").textContent = state.currency.code;
   el("refresh").classList.toggle("busy", state.loading);
 
-  el("amount").textContent = formatInput(state.input) + " " + state.currency.code;
+  el("expr").textContent = state.calcError
+    ? state.calcError
+    : state.op ? `${formatValue(state.acc)} ${state.op}` : "";
+
+  const shown = state.typed ? formatInput(state.input) : formatValue(current());
+  el("amount").textContent = shown + " " + state.currency.code;
+
+  for (const button of keypad.children) {
+    if (button.dataset.op) button.classList.toggle("armed", state.op === button.dataset.op);
+  }
 
   const per = krwPerUnit(state.snapshot, state.currency.code);
   const result = el("result");
@@ -477,43 +584,54 @@ function render() {
     : "";
 }
 
-// 키패드. 지우기는 길게 누르면 전체 삭제.
-const KEYS = ["1","2","3","4","5","6","7","8","9",".","0","⌫"];
+// 키패드. 왼쪽 세 열은 숫자, 오른쪽 한 열은 연산자다.
+const KEYS = [
+  { key: "C", kind: "fn", run: clearAll, label: "전체 지우기" },
+  { key: "⌫", kind: "fn", run: tapBackspace, label: "한 자 지우기" },
+  { key: "%", kind: "fn", run: tapPercent, label: "퍼센트" },
+  { key: "÷", kind: "op" },
+  { key: "7" }, { key: "8" }, { key: "9" }, { key: "×", kind: "op" },
+  { key: "4" }, { key: "5" }, { key: "6" }, { key: "−", kind: "op" },
+  { key: "1" }, { key: "2" }, { key: "3" }, { key: "+", kind: "op" },
+  { key: "0" },
+  { key: "00", run: () => { tapDigit("0"); tapDigit("0"); }, label: "0 두 개" },
+  { key: "." , run: tapDot },
+  { key: "=", kind: "eq", run: tapEquals, label: "계산" },
+];
+
 const keypad = el("keypad");
-for (const key of KEYS) {
+for (const spec of KEYS) {
   const button = document.createElement("button");
-  button.textContent = key;
   button.type = "button";
-  if (key === "⌫") button.setAttribute("aria-label", "지우기, 길게 누르면 전체 삭제");
+  button.textContent = spec.key;
+  if (spec.kind) button.className = spec.kind;
+  if (spec.kind === "op") button.dataset.op = spec.key;
+  if (spec.label) button.setAttribute("aria-label", spec.label);
+
+  const run = spec.run
+    || (spec.kind === "op" ? () => tapOperator(spec.key) : () => tapDigit(spec.key));
 
   button.addEventListener("click", () => {
-    if (key === ".") tapDot();
-    else if (key === "⌫") tapBackspace();
-    else tapDigit(key);
+    run();
     if (navigator.vibrate) navigator.vibrate(8);
   });
-
-  if (key === "⌫") {
-    let timer = null;
-    const start = () => { timer = setTimeout(() => { timer = null; clearInput(); }, 450); };
-    const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } };
-    button.addEventListener("pointerdown", start);
-    button.addEventListener("pointerup", cancel);
-    button.addEventListener("pointerleave", cancel);
-    button.addEventListener("pointercancel", cancel);
-    button.addEventListener("contextmenu", e => e.preventDefault());
-  }
-
   keypad.appendChild(button);
 }
 
-// 물리 키보드로도 입력할 수 있게 (맥이나 아이패드 키보드)
+// 물리 키보드로도 쓸 수 있게 (맥이나 아이패드 키보드)
+const KEY_MAP = {
+  "+": () => tapOperator("+"), "-": () => tapOperator("−"),
+  "*": () => tapOperator("×"), "x": () => tapOperator("×"),
+  "/": () => tapOperator("÷"), "%": tapPercent,
+  "=": tapEquals, "Enter": tapEquals,
+  ".": tapDot, ",": tapDot,
+  "Backspace": tapBackspace, "Escape": clearAll, "Delete": clearAll,
+};
+
 document.addEventListener("keydown", e => {
   if (el("picker").open) return;
   if (e.key >= "0" && e.key <= "9") tapDigit(e.key);
-  else if (e.key === "." || e.key === ",") tapDot();
-  else if (e.key === "Backspace") tapBackspace();
-  else if (e.key === "Escape") clearInput();
+  else if (KEY_MAP[e.key]) KEY_MAP[e.key]();
   else return;
   e.preventDefault();
 });
