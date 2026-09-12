@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<title>toKRW</title>
+<meta name="description" content="통화를 고르고 금액을 누르면 실시간 환율로 원화를 보여 줍니다.">
+<meta name="theme-color" content="#0b1020">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="toKRW">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" href="icons/icon-192.png">
+<style>
+  :root {
+    --bg: #0b1020;
+    --surface: #141a2e;
+    --surface-press: #1d2540;
+    --accent: #4f9cf9;
+    --fg: #f2f5ff;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+    overscroll-behavior: none;
+  }
+  body { -webkit-user-select: none; user-select: none; }
+
+  #app {
+    display: flex; flex-direction: column;
+    height: 100svh;
+    padding: 12px 20px calc(8px + env(safe-area-inset-bottom));
+    padding-top: calc(12px + env(safe-area-inset-top));
+    max-width: 560px; margin: 0 auto;
+  }
+
+  header { display: flex; align-items: center; gap: 12px; }
+  #pick {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--surface); color: var(--fg);
+    border: 0; border-radius: 999px;
+    padding: 10px 16px; font: inherit; font-size: 18px; font-weight: 600;
+    cursor: pointer;
+  }
+  #pick .flag { font-size: 20px; }
+  #pick .caret { opacity: .6; font-size: 13px; }
+  #refresh {
+    margin-left: auto; background: none; border: 0; padding: 8px;
+    color: var(--fg); opacity: .7; font-size: 20px; cursor: pointer;
+    line-height: 1;
+  }
+  #refresh.busy { animation: spin 1s linear infinite; opacity: 1; color: var(--accent); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  #figures {
+    flex: 1; display: flex; flex-direction: column;
+    justify-content: center; align-items: flex-end; gap: 14px;
+    min-height: 0;
+  }
+  #amount { font-size: 34px; font-weight: 500; opacity: .55; white-space: nowrap; }
+  #result { font-size: 56px; font-weight: 700; white-space: nowrap; letter-spacing: -.01em; }
+  #result.long { font-size: 44px; }
+  #result.longer { font-size: 34px; }
+
+  #rate { text-align: right; font-size: 15px; opacity: .8; }
+  #meta { text-align: right; font-size: 12px; opacity: .45; margin-top: 3px; }
+
+  #keypad {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+    margin-top: 12px;
+  }
+  #keypad button {
+    aspect-ratio: 1.6;
+    background: var(--surface); color: var(--fg);
+    border: 0; border-radius: 20px;
+    font: inherit; font-size: 26px; font-weight: 500;
+    cursor: pointer; transition: background .08s;
+  }
+  #keypad button:active { background: var(--surface-press); }
+
+  dialog#picker {
+    width: 100%; max-width: 560px; height: 88svh;
+    margin: auto auto 0; padding: 0; border: 0;
+    border-radius: 22px 22px 0 0;
+    background: var(--surface); color: var(--fg);
+    display: flex; flex-direction: column;
+  }
+  dialog#picker::backdrop { background: rgba(0,0,0,.55); }
+  .grabber { width: 40px; height: 4px; border-radius: 2px; background: #4a5578; margin: 10px auto 6px; }
+  #search {
+    margin: 8px 20px 10px; padding: 12px 14px;
+    background: var(--bg); color: var(--fg);
+    border: 1px solid #2a3352; border-radius: 12px;
+    font: inherit; font-size: 16px;
+    -webkit-user-select: text; user-select: text;
+  }
+  #list { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  #list button {
+    display: flex; align-items: center; gap: 14px; width: 100%;
+    background: none; border: 0; color: var(--fg);
+    padding: 14px 20px; font: inherit; text-align: left; cursor: pointer;
+  }
+  #list button:active { background: var(--surface-press); }
+  #list .flag { font-size: 24px; }
+  #list .names { flex: 1; min-width: 0; }
+  #list .code { font-size: 16px; font-weight: 600; }
+  #list .name { font-size: 13px; opacity: .55; }
+  #list .val { font-size: 14px; opacity: .7; }
+  #list .tick { color: var(--accent); font-weight: 700; }
+  #empty { padding: 30px 20px; text-align: center; opacity: .5; font-size: 15px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <button id="pick" aria-label="통화 바꾸기">
+      <span class="flag"></span><span class="code"></span><span class="caret">▼</span>
+    </button>
+    <button id="refresh" aria-label="환율 새로 받기">⟳</button>
+  </header>
+
+  <div id="figures">
+    <div id="amount">0 USD</div>
+    <div id="result">—</div>
+  </div>
+
+  <div id="rate"></div>
+  <div id="meta"></div>
+
+  <div id="keypad"></div>
+</div>
+
+<dialog id="picker">
+  <div class="grabber"></div>
+  <input id="search" type="search" placeholder="통화 이름이나 코드로 검색" autocomplete="off">
+  <div id="list"></div>
+  <div id="empty" hidden>찾는 통화가 없습니다</div>
+</dialog>
+
+<script>
+"use strict";
+
+// 표시 단위. 엔이나 동처럼 1단위 값이 작은 통화는 국내 은행 고시처럼 100단위로 보여 준다.
+const CURRENCIES = [
+  { code: "USD", name: "미국 달러", flag: "🇺🇸" },
+  { code: "JPY", name: "일본 엔", flag: "🇯🇵", unit: 100 },
+  { code: "EUR", name: "유로", flag: "🇪🇺" },
+  { code: "CNY", name: "중국 위안", flag: "🇨🇳" },
+  { code: "GBP", name: "영국 파운드", flag: "🇬🇧" },
+  { code: "HKD", name: "홍콩 달러", flag: "🇭🇰" },
+  { code: "TWD", name: "대만 달러", flag: "🇹🇼" },
+  { code: "SGD", name: "싱가포르 달러", flag: "🇸🇬" },
+  { code: "THB", name: "태국 바트", flag: "🇹🇭" },
+  { code: "VND", name: "베트남 동", flag: "🇻🇳", unit: 100 },
+  { code: "PHP", name: "필리핀 페소", flag: "🇵🇭" },
+  { code: "IDR", name: "인도네시아 루피아", flag: "🇮🇩", unit: 100 },
+  { code: "MYR", name: "말레이시아 링깃", flag: "🇲🇾" },
+  { code: "AUD", name: "호주 달러", flag: "🇦🇺" },
+  { code: "NZD", name: "뉴질랜드 달러", flag: "🇳🇿" },
+  { code: "CAD", name: "캐나다 달러", flag: "🇨🇦" },
+  { code: "CHF", name: "스위스 프랑", flag: "🇨🇭" },
+  { code: "INR", name: "인도 루피", flag: "🇮🇳" },
+  { code: "AED", name: "아랍에미리트 디르함", flag: "🇦🇪" },
+  { code: "SAR", name: "사우디 리얄", flag: "🇸🇦" },
+  { code: "TRY", name: "튀르키예 리라", flag: "🇹🇷" },
+  { code: "RUB", name: "러시아 루블", flag: "🇷🇺" },
+  { code: "BRL", name: "브라질 헤알", flag: "🇧🇷" },
+  { code: "MXN", name: "멕시코 페소", flag: "🇲🇽" },
+  { code: "SEK", name: "스웨덴 크로나", flag: "🇸🇪" },
+  { code: "NOK", name: "노르웨이 크로네", flag: "🇳🇴" },
+  { code: "DKK", name: "덴마크 크로네", flag: "🇩🇰" },
+  { code: "PLN", name: "폴란드 즈워티", flag: "🇵🇱" },
+  { code: "CZK", name: "체코 코루나", flag: "🇨🇿" },
+  { code: "HUF", name: "헝가리 포린트", flag: "🇭🇺", unit: 100 },
+  { code: "ZAR", name: "남아공 랜드", flag: "🇿🇦" },
+  { code: "EGP", name: "이집트 파운드", flag: "🇪🇬" },
+  { code: "ILS", name: "이스라엘 셰켈", flag: "🇮🇱" },
+  { code: "MOP", name: "마카오 파타카", flag: "🇲🇴" },
+  { code: "MNT", name: "몽골 투그릭", flag: "🇲🇳", unit: 100 },
+  { code: "KZT", name: "카자흐스탄 텡게", flag: "🇰🇿", unit: 100 },
+  { code: "UZS", name: "우즈베키스탄 숨", flag: "🇺🇿", unit: 100 },
+  { code: "NPR", name: "네팔 루피", flag: "🇳🇵" },
+  { code: "LKR", name: "스리랑카 루피", flag: "🇱🇰" },
+  { code: "PKR", name: "파키스탄 루피", flag: "🇵🇰" },
+  { code: "BDT", name: "방글라데시 타카", flag: "🇧🇩" },
+  { code: "KHR", name: "캄보디아 리엘", flag: "🇰🇭", unit: 100 },
+  { code: "LAK", name: "라오스 킵", flag: "🇱🇦", unit: 100 },
+  { code: "MMK", name: "미얀마 짯", flag: "🇲🇲", unit: 100 },
+  { code: "CLP", name: "칠레 페소", flag: "🇨🇱", unit: 100 },
+  { code: "COP", name: "콜롬비아 페소", flag: "🇨🇴", unit: 100 },
+  { code: "PEN", name: "페루 솔", flag: "🇵🇪" },
+  { code: "ARS", name: "아르헨티나 페소", flag: "🇦🇷", unit: 100 },
+  { code: "UAH", name: "우크라이나 흐리브냐", flag: "🇺🇦" },
+  { code: "RON", name: "루마니아 레우", flag: "🇷🇴" },
+  { code: "QAR", name: "카타르 리얄", flag: "🇶🇦" },
+  { code: "KWD", name: "쿠웨이트 디나르", flag: "🇰🇼" },
+];
+const BY_CODE = Object.fromEntries(CURRENCIES.map(c => [c.code, c]));
+
+// 위에서부터 차례로 시도한다. 앞의 둘은 키가 필요 없는 무료 공개 API 다.
+// 마지막은 깃허브 액션이 하루 한 번 구워 두는 파일이라 API 가 막히거나
+// 오프라인일 때도 하루 이내의 값으로 계산할 수 있다.
+const PROVIDERS = [
+  { label: "open.er-api.com", url: "https://open.er-api.com/v6/latest/USD" },
+  { label: "frankfurter.dev", url: "https://api.frankfurter.dev/v1/latest?base=USD" },
+  { label: "매일 갱신본", url: "rates.json", baked: true },
+];
+
+// 공급처가 하루에 한 번 값을 올리기 때문에 그보다 자주 받을 이유가 없다.
+const AUTO_REFRESH_MS = 24 * 60 * 60 * 1000;
+const STORE_KEY = "tokrw.snapshot";
+const CURRENCY_KEY = "tokrw.currency";
+const MAX_DIGITS = 12;
+const MAX_DECIMALS = 2;
+
+const state = {
+  currency: BY_CODE[load(CURRENCY_KEY)] || BY_CODE.USD,
+  input: "0",
+  snapshot: null,
+  loading: false,
+  error: null,
+};
+
+function load(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+function save(key, value) {
+  try { localStorage.setItem(key, value); } catch { /* 사파리 비공개 모드 등 */ }
+}
+
+// ---- 환율 ----
+
+/** 1 code 가 몇 원인지. 표에 없는 통화면 null. */
+function krwPerUnit(snapshot, code) {
+  if (!snapshot) return null;
+  if (code === "KRW") return 1;
+  const krw = snapshot.rates.KRW, unit = snapshot.rates[code];
+  if (!krw || !unit || unit <= 0) return null;
+  return krw / unit;
+}
+
+function readCache() {
+  const raw = load(STORE_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.rates && parsed.rates.KRW) return parsed;
+  } catch { /* 깨진 값은 무시 */ }
+  return null;
+}
+
+async function refresh() {
+  if (state.loading) return;
+  state.loading = true;
+  state.error = null;
+  render();
+
+  const reasons = [];
+  for (const provider of PROVIDERS) {
+    try {
+      const response = await fetch(provider.url, { cache: "no-store" });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+
+      const body = await response.json();
+      const rates = {};
+      for (const [code, value] of Object.entries(body.rates || {})) {
+        if (typeof value === "number" && isFinite(value) && value > 0) rates[code] = value;
+      }
+      rates.USD = 1;
+      if (!rates.KRW) throw new Error("응답에 KRW 가 없습니다");
+
+      // 구워 둔 파일은 받은 시각이 아니라 파일에 적힌 시각이 기준이다.
+      const fetchedAt = provider.baked && body.fetchedAt ? body.fetchedAt : Date.now();
+      state.snapshot = { rates, fetchedAt, provider: provider.label };
+      save(STORE_KEY, JSON.stringify(state.snapshot));
+      state.loading = false;
+      render();
+      return;
+    } catch (e) {
+      reasons.push(provider.label + ": " + e.message);
+    }
+  }
+
+  state.error = "환율을 가져오지 못했습니다 (" + reasons.join(" / ") + ")";
+  state.loading = false;
+  render();
+}
+
+// ---- 숫자 표시 ----
+
+const groupFmt = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 0 });
+
+/** 키패드로 찍는 중인 값을 그대로 보여 준다. "1234." 처럼 입력 중인 소수점도 살린다. */
+function formatInput(input) {
+  const [whole, decimals] = input.split(".");
+  const grouped = groupFmt.format(Number(whole) || 0);
+  if (decimals) return grouped + "." + decimals;
+  if (input.endsWith(".")) return grouped + ".";
+  return grouped;
+}
+
+/** 원화는 소수점을 버리고 천 단위로 끊어 보여 준다. */
+function formatKrw(value) {
+  return groupFmt.format(Math.round(value));
+}
+
+/** 환율처럼 크기를 모르는 값은 자릿수에 맞춰 소수점 개수를 정한다. */
+function formatRate(value) {
+  const digits = value >= 1000 ? 2 : value >= 1 ? 4 : 6;
+  return value.toLocaleString("ko-KR", {
+    minimumFractionDigits: digits, maximumFractionDigits: digits,
+  });
+}
+
+function formatUpdatedAt(millis) {
+  const minutes = Math.floor((Date.now() - millis) / 60000);
+  if (minutes < 1) return "방금 전 기준";
+  if (minutes < 60) return minutes + "분 전 기준";
+  if (minutes < 60 * 24) return Math.floor(minutes / 60) + "시간 전 기준";
+  return Math.floor(minutes / 1440) + "일 전 기준";
+}
+
+// ---- 입력 ----
+
+function tapDigit(digit) {
+  if (state.input === "0") { state.input = digit; return render(); }
+  const decimals = state.input.split(".")[1];
+  if (decimals !== undefined && decimals.length >= MAX_DECIMALS) return;
+  if ((state.input.match(/\d/g) || []).length >= MAX_DIGITS) return;
+  state.input += digit;
+  render();
+}
+
+function tapDot() {
+  if (state.input.includes(".")) return;
+  state.input += ".";
+  render();
+}
+
+function tapBackspace() {
+  state.input = state.input.slice(0, -1) || "0";
+  render();
+}
+
+function clearInput() {
+  state.input = "0";
+  render();
+}
+
+// ---- 화면 ----
+
+const el = id => document.getElementById(id);
+
+function render() {
+  el("pick").querySelector(".flag").textContent = state.currency.flag;
+  el("pick").querySelector(".code").textContent = state.currency.code;
+  el("refresh").classList.toggle("busy", state.loading);
+
+  el("amount").textContent = formatInput(state.input) + " " + state.currency.code;
+
+  const per = krwPerUnit(state.snapshot, state.currency.code);
+  const result = el("result");
+  if (per === null) {
+    result.textContent = "—";
+    result.className = "";
+  } else {
+    const text = "₩ " + formatKrw(per * (Number(state.input) || 0));
+    result.textContent = text;
+    result.className = text.length > 16 ? "longer" : text.length > 12 ? "long" : "";
+  }
+
+  let message;
+  if (state.error && !state.snapshot) {
+    message = state.error;
+  } else if (state.snapshot && per === null) {
+    message = state.currency.code + " 환율은 지금 공급처에서 제공하지 않습니다";
+  } else if (per === null) {
+    message = "환율을 불러오는 중입니다";
+  } else {
+    const unit = state.currency.unit || 1;
+    message = unit + " " + state.currency.code + " = " + formatRate(per * unit) + " KRW";
+  }
+  el("rate").textContent = message;
+
+  el("meta").textContent = state.snapshot
+    ? formatUpdatedAt(state.snapshot.fetchedAt) + " · " + state.snapshot.provider +
+      (state.error ? " · 새로고침 실패" : "")
+    : "";
+}
+
+// 키패드. 지우기는 길게 누르면 전체 삭제.
+const KEYS = ["1","2","3","4","5","6","7","8","9",".","0","⌫"];
+const keypad = el("keypad");
+for (const key of KEYS) {
+  const button = document.createElement("button");
+  button.textContent = key;
+  button.type = "button";
+  if (key === "⌫") button.setAttribute("aria-label", "지우기, 길게 누르면 전체 삭제");
+
+  button.addEventListener("click", () => {
+    if (key === ".") tapDot();
+    else if (key === "⌫") tapBackspace();
+    else tapDigit(key);
+    if (navigator.vibrate) navigator.vibrate(8);
+  });
+
+  if (key === "⌫") {
+    let timer = null;
+    const start = () => { timer = setTimeout(() => { timer = null; clearInput(); }, 450); };
+    const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } };
+    button.addEventListener("pointerdown", start);
+    button.addEventListener("pointerup", cancel);
+    button.addEventListener("pointerleave", cancel);
+    button.addEventListener("pointercancel", cancel);
+    button.addEventListener("contextmenu", e => e.preventDefault());
+  }
+
+  keypad.appendChild(button);
+}
+
+// 물리 키보드로도 입력할 수 있게 (맥이나 아이패드 키보드)
+document.addEventListener("keydown", e => {
+  if (el("picker").open) return;
+  if (e.key >= "0" && e.key <= "9") tapDigit(e.key);
+  else if (e.key === "." || e.key === ",") tapDot();
+  else if (e.key === "Backspace") tapBackspace();
+  else if (e.key === "Escape") clearInput();
+  else return;
+  e.preventDefault();
+});
+
+el("refresh").addEventListener("click", refresh);
+
+// ---- 통화 선택 ----
+
+const picker = el("picker");
+const list = el("list");
+const search = el("search");
+
+function renderList() {
+  const query = search.value.trim().toLowerCase();
+  const rows = CURRENCIES.filter(c =>
+    !query || c.code.toLowerCase().includes(query) || c.name.toLowerCase().includes(query));
+
+  list.replaceChildren();
+  el("empty").hidden = rows.length > 0;
+
+  for (const currency of rows) {
+    const per = krwPerUnit(state.snapshot, currency.code);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.innerHTML =
+      '<span class="flag"></span>' +
+      '<span class="names"><span class="code"></span><br><span class="name"></span></span>' +
+      '<span class="val"></span><span class="tick"></span>';
+    button.querySelector(".flag").textContent = currency.flag;
+    button.querySelector(".code").textContent = currency.code;
+    button.querySelector(".name").textContent = currency.name;
+    button.querySelector(".val").textContent =
+      per === null ? "" : formatRate(per * (currency.unit || 1));
+    button.querySelector(".tick").textContent =
+      currency.code === state.currency.code ? "✓" : "";
+
+    button.addEventListener("click", () => {
+      state.currency = currency;
+      save(CURRENCY_KEY, currency.code);
+      picker.close();
+      render();
+    });
+    list.appendChild(button);
+  }
+}
+
+el("pick").addEventListener("click", () => {
+  search.value = "";
+  renderList();
+  picker.showModal();
+  list.scrollTop = 0;
+});
+search.addEventListener("input", renderList);
+picker.addEventListener("click", e => { if (e.target === picker) picker.close(); });
+
+// ---- 시작 ----
+
+state.snapshot = readCache();
+render();
+if (!state.snapshot || Date.now() - state.snapshot.fetchedAt > AUTO_REFRESH_MS) refresh();
+
+// 홈 화면에서 다시 열었을 때 하루가 지났으면 새로 받는다.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  if (!state.snapshot || Date.now() - state.snapshot.fetchedAt > AUTO_REFRESH_MS) refresh();
+  else render();
+});
+
+if ("serviceWorker" in navigator) {
+  addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+}
+</script>
+</body>
+</html>

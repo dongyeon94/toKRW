@@ -1,0 +1,63 @@
+name: 환율 갱신 후 배포
+
+# 하루 한 번 환율을 받아 web/rates.json 에 커밋하고, 그 상태로 Pages 에 올린다.
+# web 폴더를 손댔을 때도 배포하고, 필요하면 Actions 탭에서 손으로 돌릴 수 있다.
+on:
+  schedule:
+    # 매일 00:30 UTC (한국시간 09:30). 공급처가 00:00 UTC 즈음 값을 올린 뒤다.
+    - cron: "30 0 * * *"
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - "scripts/fetch-rates.py"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # rates.json 커밋
+  pages: write      # Pages 배포
+  id-token: write   # Pages 배포 인증
+
+# 동시에 두 번 돌면 커밋이 엉키므로 하나씩만 돌린다.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 환율 받아서 굽기
+        run: python3 scripts/fetch-rates.py
+
+      - name: 바뀌었으면 커밋
+        run: |
+          if git diff --quiet -- web/rates.json; then
+            echo "환율에 변화가 없어 커밋하지 않습니다."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add web/rates.json
+          git commit -m "환율 갱신 $(date -u +%Y-%m-%d)"
+          git push
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
