@@ -1,8 +1,8 @@
 {
  "base": "USD",
  "source": "open.er-api.com",
- "fetchedAt": 1789184671352,
- "fetchedAtText": "2026-09-12T03:44:31+00:00",
+ "fetchedAt": 1789184822606,
+ "fetchedAtText": "2026-09-12T03:47:02+00:00",
  "rates": {
   "AED": 3.6725,
   "AFN": 64.593353,
