@@ -97,6 +97,9 @@
     background: var(--surface); color: var(--fg);
     display: flex; flex-direction: column;
   }
+  /* 위에서 display 를 줬기 때문에 닫혀 있을 때는 직접 숨겨야 한다.
+     안 그러면 계산기 아래에 검색창이 늘 붙어 나와 화면이 아래로 밀린다. */
+  dialog#picker:not([open]) { display: none; }
   dialog#picker::backdrop { background: rgba(0,0,0,.55); }
   .grabber { width: 40px; height: 4px; border-radius: 2px; background: #4a5578; margin: 10px auto 6px; }
   .pickhead { display: flex; align-items: center; gap: 10px; margin: 8px 20px 10px; }
